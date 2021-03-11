@@ -73,6 +73,7 @@ if ( !file.exists(coverage_name) ) {
   stop("Cannot open the coverage file")
 }
 
+message("Reading data files ...")
 all_contacts = read.csv(allcontact_file_name , header = F , sep = ',' )
 all_contacts = as.data.frame(all_contacts)
 colnames(all_contacts) = c('index1' , 'index2' , 'contacts')
@@ -95,23 +96,11 @@ if(ncol(contig_info) == 3){
   }
   contig_info$coverage = coverage[ , 2]
   
-  
-  sample_len = rep(0 , nrow(sample_data))
-  sample_site = rep(0 , nrow(sample_data))
-  sample_cov = rep(0 , nrow(sample_data))
-  
-  for(i in 1:nrow(sample_data))
-  {
-    sample_site[i] = log(as.numeric(contig_info[as.numeric(sample_data[i , 1]) , 2]) * 
-                           as.numeric(contig_info[as.numeric(sample_data[i , 2]) , 2]))
-    
-    sample_len[i] = log(as.numeric(contig_info[as.numeric(sample_data[i , 1]) , 3]) * 
-                          as.numeric(contig_info[as.numeric(sample_data[i , 2]) , 3]))
-    
-    sample_cov[i] = log(as.numeric(contig_info[as.numeric(sample_data[i , 1]) , 4]) * 
-                          as.numeric(contig_info[as.numeric(sample_data[i , 2]) , 4]))
-  }
-  
+  message("Preparing intra-species sample data ...")
+  sample_site = log(as.numeric(contig_info$site[sample_data$index1]) * as.numeric(contig_info$site[sample_data$index2]))
+  sample_len = log(as.numeric(contig_info$length[sample_data$index1]) * as.numeric(contig_info$length[sample_data$index2]))
+  sample_cov = log(as.numeric(contig_info$coverage[sample_data$index1]) * as.numeric(contig_info$coverage[sample_data$index2]))
+
   sampleCon = as.numeric(sample_data[ , 3])
   
   mean_site = mean(sample_site)
@@ -128,24 +117,12 @@ if(ncol(contig_info) == 3){
   data_sample = cbind(sample_site , sample_len , sample_cov , sampleCon)
   data_sample = as.data.frame(data_sample)
   colnames(data_sample) = c('sample_site' , 'sample_len' , 'sample_cov' , 'sampleCon')
-  
-  
-  all_len = rep(0 , nrow(all_contacts))
-  all_site = rep(0 , nrow(all_contacts))
-  all_cov = rep(0 , nrow(all_contacts))
-  
-  for(i in 1:nrow(all_contacts))
-  {
-    all_site[i] = log(as.numeric(contig_info[as.numeric(all_contacts[i , 1]) , 2]) * 
-                        as.numeric(contig_info[as.numeric(all_contacts[i , 2]) , 2]))
-    
-    all_len[i] = log(as.numeric(contig_info[as.numeric(all_contacts[i , 1]) , 3]) * 
-                       as.numeric(contig_info[as.numeric(all_contacts[i , 2]) , 3]))
-    
-    all_cov[i] = log(as.numeric(contig_info[as.numeric(all_contacts[i , 1]) , 4]) * 
-                       as.numeric(contig_info[as.numeric(all_contacts[i , 2]) , 4]))
-  }
-  
+ 
+  message("Preparing raw contact data ...")
+  all_site = log(as.numeric(contig_info$site[all_contacts$index1]) * as.numeric(contig_info$site[all_contacts$index2]))
+  all_len = log(as.numeric(contig_info$length[all_contacts$index1]) * as.numeric(contig_info$length[all_contacts$index2]))
+  all_cov = log(as.numeric(contig_info$coverage[all_contacts$index1]) * as.numeric(contig_info$coverage[all_contacts$index2]))
+
   allCon = as.numeric(all_contacts[ , 3])
   all_site = (all_site-mean_site)/sd_site
   all_len = (all_len-mean_len)/sd_len
@@ -154,7 +131,7 @@ if(ncol(contig_info) == 3){
   
   tryCatch(
     {
-      message(paste("normalizing",sep=" "))
+      message("Normalizing ...")
       
       if(opt$unlabeled){
         fit1 = glmmTMB(sampleCon~sample_site+sample_len+sample_cov, data = data_sample,
