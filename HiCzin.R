@@ -4,9 +4,12 @@
 
 library("optparse")
 library("glmmTMB")
+library("dplyr")
 options(scipen = 999)
 
 option_list = list(
+  make_option(c("-N", "--n_sample"), type = "integer", default = NA,
+              help = "Use only a sample of observations"),
   make_option(c("-i", "--input"), type = "character", default = NA,
               help = "input raw metagenomic Hi-C contacts"),
   make_option(c("-s", "--sample"), type = "character", default = NA,
@@ -50,8 +53,6 @@ if(!opt$unlabeled & is.na(opt$sample)){
   stop("Missing sample data to fit the zero-inflated negative binomial model")
 }
 
-
-
 allcontact_file_name = opt$input
 sample_file_name =opt$sample
 output_file_name = opt$output
@@ -74,59 +75,82 @@ if ( !file.exists(coverage_name) ) {
 }
 
 message("Reading data files ...")
-all_contacts = read.csv(allcontact_file_name , header = F , sep = ',' )
-all_contacts = as.data.frame(all_contacts)
-colnames(all_contacts) = c('index1' , 'index2' , 'contacts')
+all_contacts = read.csv(allcontact_file_name , header = F , sep = ',',
+                        colClasses=c('factor', 'factor', 'numeric'),
+                        col.names=c('index1' , 'index2' , 'contacts'))
 
-sample_data = read.csv(sample_file_name , header = F , sep = ',' )
-sample_data = as.data.frame(sample_data)
-colnames(sample_data) = c('index1' , 'index2' , 'contacts')
+sample_data = read.csv(sample_file_name , header = F , sep = ',',
+                       colClasses=c('factor', 'factor', 'numeric'),
+                       col.names=c('index1' , 'index2' , 'contacts'))
 
 contig_info = read.csv(contig_info_name , header = F , sep = ',' )
-contig_info = as.data.frame(contig_info)
 
-if(ncol(contig_info) == 3){
-  colnames(contig_info) = c('contig_name' , 'site' , 'length')
-  contig_info[contig_info$site==0 , 2] = 1
+if (ncol(contig_info) == 3) 
+{
+  contig_info = read.csv(contig_info_name , header = F , sep = ',',
+                         col.names=c('contig_name', 'length', 'site'),
+                         colClasses=c('factor', 'numeric', 'numeric'))
+  contig_info$site[contig_info$site == 0] = 1
   
-  coverage = read.table(coverage_name , header = F , sep = '' , skip= 1)[ , c(1 , 6)]
-  if(sum(contig_info[ , 1]!=coverage[ , 1])>0)
+  coverage = read.table(coverage_name , header = T , sep = '\t',
+                        colClasses=c('character', 'numeric', 'numeric', 'numeric', 'numeric'))
+  coverage$contigName = factor(sub("^([^ \t]+).*", "\\1", coverage$contigName))
+  colnames(coverage)[colnames(coverage) == 'contigName'] = 'contig_name'
+  colnames(coverage)[colnames(coverage) == 'totalAvgDepth'] = 'coverage'
+
+  # coverage = read.csv(coverage_name , header = F , sep = ',',
+  #                     colClasses=c('factor', 'numeric'), col.names=c('contig_name', 'coverage'))
+
+  if (any(contig_info$contig_name != coverage$contigName))
   {
     stop('Order mistakes exist in converage file')
   }
-  contig_info$coverage = coverage[ , 2]
+  contig_info = merge(contig_info, coverage, by = 'contig_name')[, c('contig_name', 'length', 'site','coverage')]
   
   message("Preparing intra-species sample data ...")
-  sample_site = log(as.numeric(contig_info$site[sample_data$index1]) * as.numeric(contig_info$site[sample_data$index2]))
-  sample_len = log(as.numeric(contig_info$length[sample_data$index1]) * as.numeric(contig_info$length[sample_data$index2]))
-  sample_cov = log(as.numeric(contig_info$coverage[sample_data$index1]) * as.numeric(contig_info$coverage[sample_data$index2]))
+  sample_site = log(contig_info[sample_data$index1,'site'] * contig_info[sample_data$index2, 'site'])
+  sample_len = log(contig_info[sample_data$index1, 'length'] * contig_info[sample_data$index2, 'length'])
+  sample_cov = log(contig_info[sample_data$index1, 'coverage'] * contig_info[sample_data$index2, 'coverage'])
 
-  sampleCon = as.numeric(sample_data[ , 3])
+  sampleCon = sample_data$contacts
   
-  mean_site = mean(sample_site)
-  sd_site = sd(sample_site)
-  mean_len = mean(sample_len)
-  sd_len = sd(sample_len)
-  mean_cov = mean(sample_cov)
-  sd_cov = sd(sample_cov)
+  # mean_site = mean(sample_site)
+  # sd_site = sd(sample_site)
+  # mean_len = mean(sample_len)
+  # sd_len = sd(sample_len)
+  # mean_cov = mean(sample_cov)
+  # sd_cov = sd(sample_cov)
+
+  sample_site = scale(sample_site, center=T, scale=T)
+  sample_len = scale(sample_len, center=T, scale=T)
+  sample_cov = scale(sample_cov, center=T, scale=T)
+  if (! is.na(opt$n_sample)) {
+    message("Taking only a sample of data ...")
+    ix = sample(1:length(sample_site), 10000)
+    sample_site = sample_site[ix]
+    sample_len = sample_len[ix]
+    sample_cov = sample_cov[ix]
+    sampleCon = sampleCon[ix]
+  }
+  # sample_site = (sample_site - mean_site) / sd_site
+  # sample_len = (sample_len - mean_len) / sd_len
+  # sample_cov = (sample_cov - mean_cov) / sd_cov
   
-  sample_site = (sample_site-mean_site)/sd_site
-  sample_len = (sample_len-mean_len)/sd_len
-  sample_cov = (sample_cov-mean_cov)/sd_cov
-  
-  data_sample = cbind(sample_site , sample_len , sample_cov , sampleCon)
-  data_sample = as.data.frame(data_sample)
-  colnames(data_sample) = c('sample_site' , 'sample_len' , 'sample_cov' , 'sampleCon')
+  data_sample = data.frame(cbind(sample_site, sample_len, sample_cov, sampleCon))
  
   message("Preparing raw contact data ...")
-  all_site = log(as.numeric(contig_info$site[all_contacts$index1]) * as.numeric(contig_info$site[all_contacts$index2]))
-  all_len = log(as.numeric(contig_info$length[all_contacts$index1]) * as.numeric(contig_info$length[all_contacts$index2]))
-  all_cov = log(as.numeric(contig_info$coverage[all_contacts$index1]) * as.numeric(contig_info$coverage[all_contacts$index2]))
+  all_site = log(contig_info$site[all_contacts$index1] * contig_info$site[all_contacts$index2])
+  all_len = log(contig_info$length[all_contacts$index1] * contig_info$length[all_contacts$index2])
+  all_cov = log(contig_info$coverage[all_contacts$index1] * contig_info$coverage[all_contacts$index2])
 
-  allCon = as.numeric(all_contacts[ , 3])
-  all_site = (all_site-mean_site)/sd_site
-  all_len = (all_len-mean_len)/sd_len
-  all_cov = (all_cov-mean_cov)/sd_cov
+  allCon = all_contacts$contacts
+
+  all_site = scale(all_site, center=T, scale=T)
+  all_len = scale(all_len, center=T, scale=T)
+  all_cov = scale(all_cov, center=T, scale=T)
+  # all_site = (all_site - mean_site) / sd_site
+  # all_len = (all_len - mean_len) / sd_len
+  # all_cov = (all_cov - mean_cov) / sd_cov
   
   
   tryCatch(
@@ -167,7 +191,7 @@ if(ncol(contig_info) == 3){
   
   res_all =  allCon/exp(coeff[1] + coeff[2]*all_site + coeff[3]*all_len+ coeff[4]*all_cov)
   mu_all = exp(coeff[1] + coeff[2]*all_site + coeff[3]*all_len+ coeff[4]*all_cov)
-}else{
+} else {
   colnames(contig_info) = c('contig_name' , 'length')
   coverage = read.table(coverage_name , header = F , sep = '' , skip= 1)[ , c(1 , 6)]
   if(sum(contig_info[ , 1]!=coverage[ , 1])>0)
@@ -281,7 +305,3 @@ write.table(res_all_valid , file=output_file_name, row.names=F , col.names = F ,
 if(!is.na(discarded_contact_name)){
   write.table(res_all_spur , file=discarded_contact_name, row.names=F , col.names = F , sep = ',')
 }
-
-
-
-
