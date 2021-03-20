@@ -5,6 +5,8 @@
 library("optparse")
 library("glmmTMB")
 library("dplyr")
+library("DescTools")
+
 options(scipen = 999)
 
 option_list = list(
@@ -78,10 +80,12 @@ message("Reading data files ...")
 all_contacts = read.csv(allcontact_file_name , header = F , sep = ',',
                         colClasses=c('factor', 'factor', 'numeric'),
                         col.names=c('index1' , 'index2' , 'contacts'))
+message(paste0("Input raw observations: ", nrow(all_contacts)))
 
 sample_data = read.csv(sample_file_name , header = F , sep = ',',
                        colClasses=c('factor', 'factor', 'numeric'),
                        col.names=c('index1' , 'index2' , 'contacts'))
+message(paste0("Input intra- observations: ", nrow(sample_data)))
 
 contig_info = read.csv(contig_info_name , header = F , sep = ',' )
 
@@ -92,14 +96,14 @@ if (ncol(contig_info) == 3)
                          colClasses=c('factor', 'numeric', 'numeric'))
   contig_info$site[contig_info$site == 0] = 1
   
-  coverage = read.table(coverage_name , header = T , sep = '\t',
-                        colClasses=c('character', 'numeric', 'numeric', 'numeric', 'numeric'))
-  coverage$contigName = factor(sub("^([^ \t]+).*", "\\1", coverage$contigName))
-  colnames(coverage)[colnames(coverage) == 'contigName'] = 'contig_name'
-  colnames(coverage)[colnames(coverage) == 'totalAvgDepth'] = 'coverage'
-
-  # coverage = read.csv(coverage_name , header = F , sep = ',',
-  #                     colClasses=c('factor', 'numeric'), col.names=c('contig_name', 'coverage'))
+  # coverage = read.table(coverage_name , header = T , sep = '\t',
+  #                       colClasses=c('character', 'numeric', 'numeric', 'numeric', 'numeric'))
+  # coverage$contigName = factor(sub("^([^ \t]+).*", "\\1", coverage$contigName))
+  # colnames(coverage)[colnames(coverage) == 'contigName'] = 'contig_name'
+  # colnames(coverage)[colnames(coverage) == 'totalAvgDepth'] = 'coverage'
+  coverage = read.csv(coverage_name , header = F , sep = ',',
+                      colClasses=c('factor', 'numeric'), col.names=c('contig_name', 'coverage'))
+  coverage$coverage[coverage$coverage == 0] = 1
 
   if (any(contig_info$contig_name != coverage$contigName))
   {
@@ -107,68 +111,57 @@ if (ncol(contig_info) == 3)
   }
   contig_info = merge(contig_info, coverage, by = 'contig_name')[, c('contig_name', 'length', 'site','coverage')]
   
-  message("Preparing intra-species sample data ...")
+  message("Preparing intra- data for modelling ...")
   sample_site = log(contig_info[sample_data$index1,'site'] * contig_info[sample_data$index2, 'site'])
   sample_len = log(contig_info[sample_data$index1, 'length'] * contig_info[sample_data$index2, 'length'])
-  sample_cov = log(contig_info[sample_data$index1, 'coverage'] * contig_info[sample_data$index2, 'coverage'])
+  # additional sqrt transforms skewed coverage from log-normal to normal
+  sample_cov = sqrt(log(contig_info[sample_data$index1, 'coverage'] * contig_info[sample_data$index2, 'coverage']))
 
   sampleCon = sample_data$contacts
   
-  # mean_site = mean(sample_site)
-  # sd_site = sd(sample_site)
-  # mean_len = mean(sample_len)
-  # sd_len = sd(sample_len)
-  # mean_cov = mean(sample_cov)
-  # sd_cov = sd(sample_cov)
+  sample_site = RobScale(sample_site)
+  sample_len = RobScale(sample_len)
+  sample_cov = RobScale(sample_cov)
 
-  sample_site = scale(sample_site, center=T, scale=T)
-  sample_len = scale(sample_len, center=T, scale=T)
-  sample_cov = scale(sample_cov, center=T, scale=T)
+  data_sample = data.frame(sample_site=sample_site, sample_len=sample_len, sample_cov=sample_cov, sampleCon=sampleCon)
+
   if (! is.na(opt$n_sample)) {
     message("Taking only a sample of data ...")
-    ix = sample(1:length(sample_site), 10000)
-    sample_site = sample_site[ix]
-    sample_len = sample_len[ix]
-    sample_cov = sample_cov[ix]
-    sampleCon = sampleCon[ix]
+    data_sample = sample_n(data_sample, opt$n_sample)
   }
-  # sample_site = (sample_site - mean_site) / sd_site
-  # sample_len = (sample_len - mean_len) / sd_len
-  # sample_cov = (sample_cov - mean_cov) / sd_cov
-  
-  data_sample = data.frame(cbind(sample_site, sample_len, sample_cov, sampleCon))
- 
+
   message("Preparing raw contact data ...")
   all_site = log(contig_info$site[all_contacts$index1] * contig_info$site[all_contacts$index2])
   all_len = log(contig_info$length[all_contacts$index1] * contig_info$length[all_contacts$index2])
-  all_cov = log(contig_info$coverage[all_contacts$index1] * contig_info$coverage[all_contacts$index2])
+  all_cov = sqrt(log(contig_info$coverage[all_contacts$index1] * contig_info$coverage[all_contacts$index2]))
 
   allCon = all_contacts$contacts
 
-  all_site = scale(all_site, center=T, scale=T)
-  all_len = scale(all_len, center=T, scale=T)
-  all_cov = scale(all_cov, center=T, scale=T)
-  # all_site = (all_site - mean_site) / sd_site
-  # all_len = (all_len - mean_len) / sd_len
-  # all_cov = (all_cov - mean_cov) / sd_cov
-  
-  
+  all_site = RobScale(all_site)
+  all_len = RobScale(all_len)
+  all_cov = RobScale(all_cov)
+
   tryCatch(
     {
       message("Normalizing ...")
+
+      # fitControl = glmmTMBControl(parallel = parallel::detectCores())
       
       if(opt$unlabeled){
-        fit1 = glmmTMB(sampleCon~sample_site+sample_len+sample_cov, data = data_sample,
-                       ziformula=~1,family=nbinom2)
+        message('HiCzin model with constant zero-inflation term')
+        fit1 = glmmTMB(sampleCon ~ sample_site * sample_len + sample_cov, data= data_sample,
+                       ziformula= ~1, family= nbinom2)
         
         
       }else if(opt$nb){
-        fit1 = glmmTMB(sampleCon~sample_site+sample_len+sample_cov, data = data_sample,
-                       ziformula=~0,family=nbinom2)
+        message('Nbinom model without zero-inflation')
+        fit1 = glmmTMB(sampleCon ~ sample_site * sample_len + sample_cov, data= data_sample,
+                       ziformula= ~ 0, family= nbinom2)
         
       }else{
-        fit1 = glmmTMB(sampleCon~sample_site+sample_len+sample_cov, data = data_sample,
-                       ziformula=~sample_site+sample_len+sample_cov , family=nbinom2)
+        message('HiCzin full model')
+        fit1 = glmmTMB(sampleCon ~ sample_site * sample_len +  sample_cov, data= data_sample,
+                       ziformula= ~ sample_site * sample_len + sample_cov, family= nbinom2)
       }
     },
     error = function(e){
@@ -177,21 +170,37 @@ if (ncol(contig_info) == 3)
     },
     warning = function(w){
       message(w)
-      message(paste("\nskip",  sep=" "))
+      # message(paste("\nskip",  sep=" "))
     }
   )
-  
-  
-  coeff = as.numeric(fit1$fit$par)
-  res_sample = sampleCon/exp(coeff[1] + coeff[2]*sample_site + coeff[3]*sample_len+ coeff[4]*sample_cov)
-  mu_sample = exp(coeff[1] + coeff[2]*sample_site + coeff[3]*sample_len+ coeff[4]*sample_cov)
-  index_nonzero = (res_sample > 0)
+
+  # extract conditional coefficients from the glmm fit result
+  coeff = fixef(fit1)$cond
+
+  # expected values for each sample interaction
+  mu_sample = exp(coeff['(Intercept)'] + 
+                  coeff['sample_site'] * sample_site + 
+                  coeff['sample_len'] * sample_len +
+                  coeff['sample_cov'] * sample_cov)
+
+  # normalised interaction terms (observed-over-expeted)
+  res_sample = sampleCon / mu_sample
+
+  index_nonzero = res_sample > 0
   res_sample_nonzero = res_sample[index_nonzero]
   mu_sample_nonzero = mu_sample[index_nonzero]
+
+  # expected values for all raw interactions
+  mu_all = exp(coeff['(Intercept)'] + 
+               coeff['sample_site'] * all_site + 
+               coeff['sample_len'] * all_len +
+               coeff['sample_cov'] * all_cov)
+
+  # all noramlised interaction terms (observed-over-expected)
+  res_all =  allCon / mu_all
   
-  res_all =  allCon/exp(coeff[1] + coeff[2]*all_site + coeff[3]*all_len+ coeff[4]*all_cov)
-  mu_all = exp(coeff[1] + coeff[2]*all_site + coeff[3]*all_len+ coeff[4]*all_cov)
 } else {
+
   colnames(contig_info) = c('contig_name' , 'length')
   coverage = read.table(coverage_name , header = F , sep = '' , skip= 1)[ , c(1 , 6)]
   if(sum(contig_info[ , 1]!=coverage[ , 1])>0)
@@ -252,8 +261,7 @@ if (ncol(contig_info) == 3)
       if(opt$unlabeled){
         fit1 = glmmTMB(sampleCon~sample_len+sample_cov, data = data_sample,
                        ziformula=~1,family=nbinom2)
-        
-        
+
       }else if(opt$nb){
         fit1 = glmmTMB(sampleCon~sample_len+sample_cov, data = data_sample,
                        ziformula=~0,family=nbinom2)
@@ -285,23 +293,34 @@ if (ncol(contig_info) == 3)
   mu_all = exp(coeff[1] + coeff[2]*all_len + coeff[3]*all_cov)
 }
 
+# report the result of glmmTMB
+summary(fit1)
 
 ###########detect spurious contacts#################
-sigma = summary(fit1)$sigma
 
-pvalue_all = pnbinom(allCon , size = sigma  ,mu = mu_all)
-pvalue_sample = pnbinom(sampleCon[index_nonzero] , size =  sigma  , mu = mu_sample_nonzero)
+# get nbionomial dispersion term as sigma
+#sigma = summary(fit1)$sigma
+sigma = exp(fixef(fit1)$disp) # this approach uses module method
 
-index_spur = (pvalue_all<quantile(pvalue_sample , thres) | res_all < quantile(res_sample_nonzero, thres))
+# calculate pvalues for sample and raw interactions, using alternative formulation of nbionom
+pvalue_all = pnbinom(allCon, size = sigma, mu = mu_all)
+pvalue_sample = pnbinom(sampleCon[index_nonzero], size =  sigma, mu = mu_sample_nonzero)
 
-all_contacts$contacts = res_all
+# spurious interactions are those which are below the user-supplied threshold quantile,
+#  either within pvalues **or** normalised interaction terms.
+#  NOTE: this two-term filter (which also rejects normalised interactions) may not be expected
+index_spur = (pvalue_all < quantile(pvalue_sample, thres) | res_all < quantile(res_sample_nonzero, thres))
 
+# add new result columns
+all_contacts$res_contacts = res_all
+all_contacts$pvalue = pvalue_all
+
+# split raw interactions into accepted and spurious
 res_all_valid = all_contacts[!index_spur , ]
 res_all_spur = all_contacts[index_spur , ]
 
-
-write.table(res_all_valid , file=output_file_name, row.names=F , col.names = F , sep = ',')
+write.table(res_all_valid, file=output_file_name, row.names=F, col.names = F, sep = ',')
 
 if(!is.na(discarded_contact_name)){
-  write.table(res_all_spur , file=discarded_contact_name, row.names=F , col.names = F , sep = ',')
+  write.table(res_all_spur, file=discarded_contact_name, row.names=F, col.names = F, sep = ',')
 }
