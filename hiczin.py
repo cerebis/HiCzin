@@ -3,7 +3,6 @@ import numpy as np
 import patsy
 import argparse
 import statsmodels.discrete.count_model as cm
-import matplotlib.pyplot as plt
 import seaborn as sb
 
 from scipy.stats import nbinom
@@ -126,14 +125,13 @@ g.map_diag(sb.kdeplot, lw=2)
 g.savefig('data_distrib.pdf')
 
 
-sample_data = make_table(sample_contacts, sample_sites, sample_length, sample_coverage)
-all_data = make_table(all_contacts, all_sites, all_length, all_coverage)
+sample_exog = make_table(sample_contacts, sample_sites, sample_length, sample_coverage)
 
 print('Fitting ZINB model to data')
 
 # prepare design matrices to supply ZINB model
 formula = "contacts ~ sites * length + coverage"
-y, X = patsy.dmatrices(formula, fit_data(sample_data, args.n_sample), return_type='matrix')
+y, X = patsy.dmatrices(formula, fit_data(sample_exog, args.n_sample), return_type='matrix')
 
 # attempt to fit
 md = cm.ZeroInflatedNegativeBinomialP(y,  # endogenous
@@ -147,14 +145,15 @@ print('Calculating results')
 
 # prediction means include zero-inflation adjustment
 #  -- this was not part of the HiCzin R code, which ignores ZI part
-_, X = patsy.dmatrices(formula, sample_data, return_type='matrix')
+_, X = patsy.dmatrices(formula, sample_exog, return_type='matrix')
 sample_mu = mdf.predict(exog=X, exog_infl=X, which='mean')
 sample_norm = sample_contacts / sample_mu
 ix_nz = sample_norm > 0
 sample_nz_mu = sample_mu[ix_nz]
 sample_nz_norm = sample_norm[ix_nz]
 
-_, X = patsy.dmatrices(formula, all_data, return_type='matrix')
+all_exog = make_table(all_contacts, all_sites, all_length, all_coverage)
+_, X = patsy.dmatrices(formula, all_exog, return_type='matrix')
 all_mu = mdf.predict(exog=X, exog_infl=X, which='mean')
 all_norm = all_contacts / all_mu
 
@@ -174,6 +173,12 @@ all_data['expected'] = all_mu
 all_data['normed'] = all_norm
 all_data['pvalue'] = all_pvalue
 
+# add additional information for each index
+all_data[['length1', 'sites1', 'coverage1']] = \
+    contig_info.loc[all_data.index1, ['length', 'sites', 'coverage']].reset_index(drop=True)
+all_data[['length2', 'sites2', 'coverage2']] = \
+    contig_info.loc[all_data.index2, ['length', 'sites', 'coverage']].reset_index(drop=True)
+
 # split raw interactions into accepted and spurious
 all_valid = all_data[~ix_spur]
 all_spur = all_data[ix_spur]
@@ -181,8 +186,6 @@ all_spur = all_data[ix_spur]
 print('Writing output')
 
 all_valid.to_csv(args.valid_out,
-                 columns=['contacts', 'expected', 'normed', 'pvalue'],
                  index=False, header=True)
 all_spur.to_csv(args.spur_out,
-                columns=['contacts', 'expected', 'normed', 'pvalue'],
                 index=False, header=True)
